@@ -209,7 +209,7 @@ func NewSyncContext(
 	if err != nil {
 		return nil, nil, err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	disco, err := kube.CreateCachedDiscoveryClientForConfig(restConfig)
 	if err != nil {
 		return nil, nil, err
 	}

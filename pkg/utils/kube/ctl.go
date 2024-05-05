@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/user"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
@@ -13,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/managedfields"
-	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/disk"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/kube-openapi/pkg/util/proto"
@@ -56,7 +60,7 @@ type APIResourceInfo struct {
 type filterFunc func(apiResource *metav1.APIResource) bool
 
 func (k *KubectlCmd) filterAPIResources(config *rest.Config, preferred bool, resourceFilter ResourceFilter, filter filterFunc) ([]APIResourceInfo, error) {
-	disco, err := discovery.NewDiscoveryClientForConfig(config)
+	disco, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +128,7 @@ func isSupportedVerb(apiResource *metav1.APIResource, verb string) bool {
 // - managedfields.GvkParser: used for building a ParseableType to be used in
 // structured-merge-diffs
 func (k *KubectlCmd) LoadOpenAPISchema(config *rest.Config) (openapi.Resources, *managedfields.GvkParser, error) {
-	disco, err := discovery.NewDiscoveryClientForConfig(config)
+	disco, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -184,7 +188,7 @@ func (k *KubectlCmd) GetResource(ctx context.Context, config *rest.Config, gvk s
 	if err != nil {
 		return nil, err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(config)
+	disco, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +211,7 @@ func (k *KubectlCmd) CreateResource(ctx context.Context, config *rest.Config, gv
 	if err != nil {
 		return nil, err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(config)
+	disco, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +234,7 @@ func (k *KubectlCmd) PatchResource(ctx context.Context, config *rest.Config, gvk
 	if err != nil {
 		return nil, err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(config)
+	disco, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +257,7 @@ func (k *KubectlCmd) DeleteResource(ctx context.Context, config *rest.Config, gv
 	if err != nil {
 		return err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(config)
+	disco, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return err
 	}
@@ -312,7 +316,7 @@ func (k *KubectlCmd) ConvertToVersion(obj *unstructured.Unstructured, group stri
 func (k *KubectlCmd) GetServerVersion(config *rest.Config) (string, error) {
 	span := k.Tracer.StartSpan("GetServerVersion")
 	defer span.Finish()
-	client, err := discovery.NewDiscoveryClientForConfig(config)
+	client, err := CreateCachedDiscoveryClientForConfig(config)
 	if err != nil {
 		return "", err
 	}
@@ -347,4 +351,33 @@ loop:
 		}
 	}
 	return g.Wait()
+}
+
+func CreateCachedDiscoveryClientForConfig(config *rest.Config) (*disk.CachedDiscoveryClient, error) {
+	baseCacheDir := os.Getenv("KUBECACHEDIR")
+	if baseCacheDir == "" {
+		currentUser, err := user.Current()
+		if err != nil {
+			return nil, err
+		}
+		baseCacheDir = filepath.Join(currentUser.HomeDir, ".kube", "cache")
+	}
+	httpCacheDir := filepath.Join(baseCacheDir, "http")
+	discCacheDir := filepath.Join(baseCacheDir, "discovery", toHostDir(config.Host))
+
+	return disk.NewCachedDiscoveryClientForConfig(config, discCacheDir, httpCacheDir, 5*time.Minute)
+}
+
+func CreateCachedDiscoveryClientForConfigOrDie(config *rest.Config) *disk.CachedDiscoveryClient {
+	client, err := CreateCachedDiscoveryClientForConfig(config)
+	if err != nil {
+		panic(err)
+	}
+	return client
+}
+
+func toHostDir(host string) string {
+	h := strings.Replace(strings.Replace(host, "https://", "", 1), "http://", "", 1)
+	regexWhitespaceOrDot := regexp.MustCompile(`[^(\w/\.)]`)
+	return regexWhitespaceOrDot.ReplaceAllString(h, "_")
 }

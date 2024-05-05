@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -36,6 +37,7 @@ import (
 
 	"github.com/argoproj/gitops-engine/pkg/utils/kube"
 	"github.com/argoproj/gitops-engine/pkg/utils/tracing"
+	"github.com/ugurcsen/gods-generic/sets/hashset"
 )
 
 const (
@@ -175,6 +177,7 @@ func NewClusterCache(config *rest.Config, opts ...UpdateSettingsFunc) *clusterCa
 		listRetryLimit:          1,
 		listRetryUseBackoff:     false,
 		listRetryFunc:           ListRetryFuncNever,
+		watchedResources:        hashset.New[schema.GroupVersionKind](),
 	}
 	for i := range opts {
 		opts[i](cache)
@@ -228,6 +231,8 @@ type clusterCache struct {
 	gvkParser                   *managedfields.GvkParser
 
 	respectRBAC int
+
+	watchedResources *hashset.Set[schema.GroupVersionKind]
 }
 
 type clusterCacheSync struct {
@@ -479,6 +484,7 @@ func (c *clusterCache) startMissingWatches() error {
 	if err != nil {
 		return err
 	}
+	apis = filterWatchedResources(apis, c.watchedResources)
 	client, err := c.kubectl.NewDynamicClient(c.config)
 	if err != nil {
 		return err
@@ -837,6 +843,7 @@ func (c *clusterCache) sync() error {
 	if err != nil {
 		return err
 	}
+	apiResources = filterWatchedResources(apiResources, c.watchedResources)
 	c.apiResources = apiResources
 
 	openAPISchema, gvkParser, err := c.kubectl.LoadOpenAPISchema(config)
@@ -851,6 +858,7 @@ func (c *clusterCache) sync() error {
 	c.openAPISchema = openAPISchema
 
 	apis, err := c.kubectl.GetAPIResources(c.config, true, c.settings.ResourcesFilter)
+	apis = filterWatchedResources(apis, c.watchedResources)
 
 	if err != nil {
 		return err
@@ -1150,7 +1158,7 @@ func (c *clusterCache) managesNamespace(namespace string) bool {
 func (c *clusterCache) GetManagedLiveObjs(targetObjs []*unstructured.Unstructured, isManaged func(r *Resource) bool) (map[kube.ResourceKey]*unstructured.Unstructured, error) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-
+	newResourcesAddedToWatch := false
 	for _, o := range targetObjs {
 		if len(c.namespaces) > 0 {
 			if o.GetNamespace() == "" && !c.clusterResources {
@@ -1158,6 +1166,25 @@ func (c *clusterCache) GetManagedLiveObjs(targetObjs []*unstructured.Unstructure
 			} else if o.GetNamespace() != "" && !c.managesNamespace(o.GetNamespace()) {
 				return nil, fmt.Errorf("Namespace %q for %s %q is not managed", o.GetNamespace(), o.GetKind(), o.GetName())
 			}
+			if isDynamicResourceLookupEnabled() {
+				objectGVK := schema.GroupVersionKind{
+					Group:   o.GetObjectKind().GroupVersionKind().Group,
+					Version: o.GetObjectKind().GroupVersionKind().Version,
+					Kind:    o.GetObjectKind().GroupVersionKind().Kind,
+				}
+				if !c.watchedResources.Contains(objectGVK) {
+					c.watchedResources.Add(objectGVK)
+					newResourcesAddedToWatch = true
+				}
+			}
+		}
+	}
+	if isDynamicResourceLookupEnabled() && newResourcesAddedToWatch {
+		err := runSynced(&c.lock, func() error {
+			return c.startMissingWatches()
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1312,4 +1339,31 @@ func (c *clusterCache) GetClusterInfo() ClusterInfo {
 // We ignore API types which have a high churn rate, and/or whose updates are irrelevant to the app
 func skipAppRequeuing(key kube.ResourceKey) bool {
 	return ignoredRefreshResources[key.Group+"/"+key.Kind]
+}
+
+// filterWatchedResources filters out only those resources that the Application controller is intrested in if the Dynamic resource lookup feature is enabled, else does not do any filtering operation and returns all the API resources.
+func filterWatchedResources(apiResources []kube.APIResourceInfo, watchedResources *hashset.Set[schema.GroupVersionKind]) []kube.APIResourceInfo {
+	if isDynamicResourceLookupEnabled() {
+		var filteredResources []kube.APIResourceInfo
+		for _, resourceInfo := range apiResources {
+			resourceKey := schema.GroupVersionKind{
+				Group:   resourceInfo.GroupVersionResource.Group,
+				Version: resourceInfo.GroupVersionResource.Version,
+				Kind:    resourceInfo.GroupKind.Kind,
+			}
+			if watchedResources.Contains(resourceKey) {
+				filteredResources = append(filteredResources, resourceInfo)
+			}
+		}
+		return filteredResources
+	}
+	return apiResources
+}
+
+// isDynamicResourceLookupEnabled return true if the dynamic resource lookup is enabled via an environment flag, false otherwise
+func isDynamicResourceLookupEnabled() bool {
+	if value, ok := os.LookupEnv("DYNAMIC_RESOURCE_LOOKUP_ENABLED"); ok && value == "true" {
+		return true
+	}
+	return false
 }

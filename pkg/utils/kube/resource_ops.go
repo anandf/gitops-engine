@@ -19,7 +19,6 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -220,7 +219,7 @@ func (k *kubectlResourceOperations) UpdateResource(ctx context.Context, obj *uns
 	if err != nil {
 		return nil, err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(k.config)
+	disco, err := CreateCachedDiscoveryClientForConfig(k.config)
 	if err != nil {
 		return nil, err
 	}
