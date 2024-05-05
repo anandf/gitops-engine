@@ -447,6 +447,7 @@ func (c *clusterCache) Invalidate(opts ...UpdateSettingsFunc) {
 	}
 	c.apisMeta = nil
 	c.namespacedResources = nil
+	c.watchedResources.Clear()
 	c.log.Info("Invalidated cluster")
 }
 
