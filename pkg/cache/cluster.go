@@ -1174,6 +1174,7 @@ func (c *clusterCache) GetManagedLiveObjs(targetObjs []*unstructured.Unstructure
 					Kind:    o.GetObjectKind().GroupVersionKind().Kind,
 				}
 				if !c.watchedResources.Contains(objectGVK) {
+					c.log.Info(fmt.Sprintf("Adding new GVK as a resource type to be managed", objectGVK.String()))
 					c.watchedResources.Add(objectGVK)
 					newResourcesAddedToWatch = true
 				}
@@ -1181,6 +1182,8 @@ func (c *clusterCache) GetManagedLiveObjs(targetObjs []*unstructured.Unstructure
 		}
 	}
 	if isDynamicResourceLookupEnabled() && newResourcesAddedToWatch {
+		c.log.Info("New resource types have been added starting missing watches")
+		c.log.Info(fmt.Sprintf("contents of watched resource set %s", c.watchedResources.String()))
 		err := runSynced(&c.lock, func() error {
 			return c.startMissingWatches()
 		})
@@ -1353,6 +1356,7 @@ func filterWatchedResources(apiResources []kube.APIResourceInfo, watchedResource
 				Kind:    resourceInfo.GroupKind.Kind,
 			}
 			if watchedResources.Contains(resourceKey) {
+				klogr.New().Info(fmt.Sprintf("Adding resource info as resource type %s is managed by the application controller", resourceKey.String()))
 				filteredResources = append(filteredResources, resourceInfo)
 			}
 		}
@@ -1364,6 +1368,7 @@ func filterWatchedResources(apiResources []kube.APIResourceInfo, watchedResource
 // isDynamicResourceLookupEnabled return true if the dynamic resource lookup is enabled via an environment flag, false otherwise
 func isDynamicResourceLookupEnabled() bool {
 	if value, ok := os.LookupEnv("DYNAMIC_RESOURCE_LOOKUP_ENABLED"); ok && value == "true" {
+		klogr.New().Info("Dynamic resource lookup feature is enabled")
 		return true
 	}
 	return false
