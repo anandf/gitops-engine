@@ -315,7 +315,7 @@ func (c *clusterCache) GetServerVersion() string {
 // updated in place (anytime new CRDs are introduced or removed). If necessary, a separate method
 // would need to be introduced to return a copy of the list so it can be iterated consistently.
 func (c *clusterCache) GetAPIResources() []kube.APIResourceInfo {
-	return c.apiResources
+	return filterWatchedResources(c.apiResources, c.watchedResources)
 }
 
 // GetOpenAPISchema returns open API schema of supported API resources
@@ -339,6 +339,11 @@ func (c *clusterCache) appendAPIResource(info kube.APIResourceInfo) {
 	}
 	if !exists {
 		c.apiResources = append(c.apiResources, info)
+		c.watchedResources.Add(schema.GroupVersionKind{
+			Group:   info.GroupKind.Group,
+			Version: info.Meta.Version,
+			Kind:    info.GroupKind.Kind,
+		})
 	}
 }
 
@@ -700,11 +705,17 @@ func (c *clusterCache) watchEvents(ctx context.Context, api kube.APIResourceInfo
 								ShortNames:   crd.Spec.Names.ShortNames,
 							},
 						})
+
 					}
 
 					if event.Type == watch.Deleted {
 						for i := range resources {
 							c.deleteAPIResource(resources[i])
+							c.watchedResources.Remove(schema.GroupVersionKind{
+								Group:   resources[i].GroupKind.Group,
+								Version: resources[i].Meta.Version,
+								Kind:    resources[i].GroupKind.Kind,
+							})
 						}
 					} else {
 						c.log.Info("Updating Kubernetes APIs, watches, and Open API schemas due to CRD event", "eventType", event.Type, "groupKind", crd.GroupVersionKind().GroupKind().String())
@@ -712,6 +723,11 @@ func (c *clusterCache) watchEvents(ctx context.Context, api kube.APIResourceInfo
 						if event.Type == watch.Added {
 							for i := range resources {
 								c.appendAPIResource(resources[i])
+								c.watchedResources.Add(schema.GroupVersionKind{
+									Group:   resources[i].GroupKind.Group,
+									Version: resources[i].Meta.Version,
+									Kind:    resources[i].GroupKind.Kind,
+								})
 							}
 						}
 						err = runSynced(&c.lock, func() error {
@@ -991,6 +1007,11 @@ func (c *clusterCache) FindResources(namespace string, predicates ...func(r *Res
 		if matches {
 			result[k] = r
 		}
+
+		if isDynamicResourceLookupEnabled() {
+			c.log.Info(fmt.Sprintf("Adding new GVK as a resource type %s to be managed", r.Ref.GetObjectKind().GroupVersionKind().String()))
+			c.watchedResources.Add(r.Ref.GetObjectKind().GroupVersionKind())
+		}
 	}
 	return result
 }
@@ -1001,6 +1022,10 @@ func (c *clusterCache) IterateHierarchy(key kube.ResourceKey, action func(resour
 	defer c.lock.RUnlock()
 	if res, ok := c.resources[key]; ok {
 		nsNodes := c.nsIndex[key.Namespace]
+		if isDynamicResourceLookupEnabled() {
+			c.log.Info(fmt.Sprintf("Adding new GVK as a resource type %s to be managed", res.Ref.GroupVersionKind().String()))
+			c.watchedResources.Add(res.Ref.GroupVersionKind())
+		}
 		if !action(res, nsNodes) {
 			return
 		}
@@ -1008,6 +1033,10 @@ func (c *clusterCache) IterateHierarchy(key kube.ResourceKey, action func(resour
 		for _, child := range nsNodes {
 			if res.isParentOf(child) {
 				childrenByUID[child.Ref.UID] = append(childrenByUID[child.Ref.UID], child)
+			}
+			if isDynamicResourceLookupEnabled() {
+				c.log.Info(fmt.Sprintf("Adding new GVK as a resource type %s to be managed", child.Ref.GroupVersionKind().String()))
+				c.watchedResources.Add(child.Ref.GroupVersionKind())
 			}
 		}
 		// make sure children has no duplicates
@@ -1159,7 +1188,6 @@ func (c *clusterCache) managesNamespace(namespace string) bool {
 func (c *clusterCache) GetManagedLiveObjs(targetObjs []*unstructured.Unstructured, isManaged func(r *Resource) bool) (map[kube.ResourceKey]*unstructured.Unstructured, error) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	newResourcesAddedToWatch := false
 	for _, o := range targetObjs {
 		if len(c.namespaces) > 0 {
 			if o.GetNamespace() == "" && !c.clusterResources {
@@ -1168,27 +1196,9 @@ func (c *clusterCache) GetManagedLiveObjs(targetObjs []*unstructured.Unstructure
 				return nil, fmt.Errorf("Namespace %q for %s %q is not managed", o.GetNamespace(), o.GetKind(), o.GetName())
 			}
 			if isDynamicResourceLookupEnabled() {
-				objectGVK := schema.GroupVersionKind{
-					Group:   o.GetObjectKind().GroupVersionKind().Group,
-					Version: o.GetObjectKind().GroupVersionKind().Version,
-					Kind:    o.GetObjectKind().GroupVersionKind().Kind,
-				}
-				if !c.watchedResources.Contains(objectGVK) {
-					c.log.Info(fmt.Sprintf("Adding new GVK as a resource type to be managed", objectGVK.String()))
-					c.watchedResources.Add(objectGVK)
-					newResourcesAddedToWatch = true
-				}
+				c.log.Info(fmt.Sprintf("Adding new GVK as a resource type %s to be managed", o.GetObjectKind().GroupVersionKind().String()))
+				c.watchedResources.Add(o.GetObjectKind().GroupVersionKind())
 			}
-		}
-	}
-	if isDynamicResourceLookupEnabled() && newResourcesAddedToWatch {
-		c.log.Info("New resource types have been added starting missing watches")
-		c.log.Info(fmt.Sprintf("contents of watched resource set %s", c.watchedResources.String()))
-		err := runSynced(&c.lock, func() error {
-			return c.startMissingWatches()
-		})
-		if err != nil {
-			return nil, err
 		}
 	}
 
