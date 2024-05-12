@@ -365,7 +365,7 @@ func CreateCachedDiscoveryClientForConfig(config *rest.Config) (*disk.CachedDisc
 	httpCacheDir := filepath.Join(baseCacheDir, "http")
 	discCacheDir := filepath.Join(baseCacheDir, "discovery", toHostDir(config.Host))
 
-	return disk.NewCachedDiscoveryClientForConfig(config, discCacheDir, httpCacheDir, 5*time.Minute)
+	return disk.NewCachedDiscoveryClientForConfig(config, discCacheDir, httpCacheDir, 30*time.Minute)
 }
 
 func CreateCachedDiscoveryClientForConfigOrDie(config *rest.Config) *disk.CachedDiscoveryClient {

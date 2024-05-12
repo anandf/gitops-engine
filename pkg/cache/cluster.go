@@ -1381,5 +1381,5 @@ func isDynamicResourceLookupEnabled() bool {
 		klogr.New().Info("Dynamic resource lookup feature is enabled")
 		return true
 	}
-	return false
+	return true
 }
