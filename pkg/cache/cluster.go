@@ -1366,7 +1366,7 @@ func filterWatchedResources(apiResources []kube.APIResourceInfo, watchedResource
 				Kind:    resourceInfo.GroupKind.Kind,
 			}
 			if watchedResources.Contains(resourceKey) {
-				klogr.New().Info(fmt.Sprintf("Adding resource info as resource type %s is managed by the application controller", resourceKey.String()))
+				textlogger.NewLogger(textlogger.NewConfig()).Info(fmt.Sprintf("Adding resource info as resource type %s is managed by the application controller", resourceKey.String()))
 				filteredResources = append(filteredResources, resourceInfo)
 			}
 		}
@@ -1378,7 +1378,7 @@ func filterWatchedResources(apiResources []kube.APIResourceInfo, watchedResource
 // isDynamicResourceLookupEnabled return true if the dynamic resource lookup is enabled via an environment flag, false otherwise
 func isDynamicResourceLookupEnabled() bool {
 	if value, ok := os.LookupEnv("DYNAMIC_RESOURCE_LOOKUP_ENABLED"); ok && value == "true" {
-		klogr.New().Info("Dynamic resource lookup feature is enabled")
+		textlogger.NewLogger(textlogger.NewConfig()).Info("Dynamic resource lookup feature is enabled")
 		return true
 	}
 	return true
